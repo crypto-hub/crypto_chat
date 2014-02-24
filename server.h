@@ -7,6 +7,8 @@
 #ifndef		__SERVER_H__
 #define		__SERVER_H__
 
+#include <pthread.h>
+
 /**
  * client_t @ defines the structure containing info about client.
  *
@@ -16,8 +18,11 @@
 
 typedef struct
 {
-	int id;
-	int fd;
+	int 			id;
+	int 			fd;
+	struct sockaddr_in	addr;
+	pthread_t		sender_tid;
+	pthread_t		receiver_tid;
 }client_t;
 
 /**

@@ -10,37 +10,39 @@
 #include "server.h"
 #include <assert.h>
 
-queue_t data_queues[10];
+#define BACKLOG		10
+#define MAX_CLIENTS	10
+
+client_t	clients[MAX_CLIENTS];
+queue_t 	data_queues[MAX_CLIENTS];
+sem_t		tosend[MAX_CLIENTS];
+pthread_t 	tid[MAX_CLIENTS];
+
 int num_clients;
-sem_t	tosend[10];
 
 void main(int argc, char** argv)
 {
 	assert(argv[1] != NULL);
-	client_t	client_info[10];
-	pthread_t tid[10];
+
 	int i;
+	char buff[20];
+	num_clients = 0;
 
 	int server_fd = server_start(atoi(argv[1]));
-
-	struct sockaddr_in	server_addr, client_addr;
-	char buff[20];
-
-	num_clients = 0;
 
 	while(TRUE)
 	{
 		printf("Sever Waiting...\n");
-		int len;
-		int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &len);
-		printf("Newly accepted connection @ %s!!!\n", inet_ntop(AF_INET, &client_addr.sin_addr, buff, sizeof(buff)));
+		int len = sizeof(clients[num_clients].addr);
+		int client_fd = accept(server_fd, (struct sockaddr *)&(clients[num_clients].addr), &len);
+		printf("Newly accepted connection @ %s!!!\n", inet_ntop(AF_INET, &(clients[num_clients].addr.sin_addr), buff, sizeof(buff)));
 		queue_create(&(data_queues[num_clients]));
 		sem_init(&(tosend[num_clients]), 0, 0);
-		client_info[num_clients].fd = client_fd;
-		client_info[num_clients].id = num_clients;
+		clients[num_clients].fd = client_fd;
+		clients[num_clients].id = num_clients;
 		num_clients++;
-		pthread_create(&tid[2*(num_clients-1)], NULL, sender, &(client_info[num_clients-1]));
-		pthread_create(&tid[2*(num_clients-1) + 1], NULL, receiver, &(client_info[num_clients-1]));	//TODO: need to fix tid issue
+		pthread_create(&(clients[num_clients-1].sender_tid), NULL, sender, &(clients[num_clients-1]));
+		pthread_create(&(clients[num_clients-1].receiver_tid), NULL, receiver, &(clients[num_clients-1]));
 	}
 }
 
@@ -56,7 +58,7 @@ int server_start(int port_num)
 	server_addr.sin_port		= htons(port_num);
 	
 	bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
-	listen(server_fd, 5);
+	listen(server_fd, BACKLOG);
 	printf("Started Server @ %s:%d!!!\n", inet_ntop(AF_INET, &server_addr.sin_addr, buff, sizeof(buff)), port_num);
 
 	return server_fd;
@@ -66,13 +68,18 @@ void* receiver(void* cinfo)
 {
 	client_t* client = (client_t*) cinfo;
 	char data;
-	int i;
+	int i, nbytes_recv;
 	printf("Receiver Info: %d	%d\n", client->fd, client->id);
 
 	while(TRUE)
 	{
 		printf("Receiver%d: Entered...\n", client->id);
-		recv(client->fd, &data, 1, 0);
+		nbytes_recv = recv(client->fd, (void*)&data, 1, 0);
+		if(nbytes_recv == 0)
+		{
+			pthread_cancel(client->sender_tid);
+			pthread_exit(NULL);
+		}
 		printf("Receiver%d: Received... %c\n", client->id, data);
 		for(i=0; i<num_clients; i++)
 		{
@@ -100,7 +107,7 @@ void* sender(void* cinfo)
 		while(!queue_isempty(&(data_queues[client->id])))
 		{
 			queue_dequeue(&(data_queues[client->id]), &data);
-			send(client->fd, &data, 1, 0);
+			send(client->fd, (void*)&data, 1, 0);
 			printf("Sender%d: Sent...%c\n", client->id, data);
 		}
 	}
