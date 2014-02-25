@@ -10,39 +10,36 @@
 #include "server.h"
 #include <assert.h>
 
-#define BACKLOG		10
-#define MAX_CLIENTS	10
-
-client_t	clients[MAX_CLIENTS];
-queue_t 	data_queues[MAX_CLIENTS];
-sem_t		tosend[MAX_CLIENTS];
-pthread_t 	tid[MAX_CLIENTS];
-
-int num_clients;
+group_t groups[MAX_GROUPS];
 
 void main(int argc, char** argv)
 {
 	assert(argv[1] != NULL);
 
-	int i;
 	char buff[20];
-	num_clients = 0;
+
+	groups[0].num_clients = 0;
+	groups[1].num_clients = 0;
 
 	int server_fd = server_start(atoi(argv[1]));
+
+	int group_id = 0;
 
 	while(TRUE)
 	{
 		printf("Sever Waiting...\n");
-		int len = sizeof(clients[num_clients].addr);
-		int client_fd = accept(server_fd, (struct sockaddr *)&(clients[num_clients].addr), &len);
-		printf("Newly accepted connection @ %s!!!\n", inet_ntop(AF_INET, &(clients[num_clients].addr.sin_addr), buff, sizeof(buff)));
-		queue_create(&(data_queues[num_clients]));
-		sem_init(&(tosend[num_clients]), 0, 0);
-		clients[num_clients].fd = client_fd;
-		clients[num_clients].id = num_clients;
-		num_clients++;
-		pthread_create(&(clients[num_clients-1].sender_tid), NULL, sender, &(clients[num_clients-1]));
-		pthread_create(&(clients[num_clients-1].receiver_tid), NULL, receiver, &(clients[num_clients-1]));
+		group_id = (group_id+1)%2;	// TODO: take group id from user and authenticate
+		client_t* client = &(groups[group_id].clients[groups[group_id].num_clients]);
+		int len = sizeof(client->addr);
+
+		int client_fd = accept(server_fd, (struct sockaddr *)&(client->addr), &len);
+		printf("Newly accepted connection @ %s!!!\n", inet_ntop(AF_INET, &(client->addr.sin_addr), buff, sizeof(buff)));
+		client_init(client, client_fd, group_id);
+
+		pthread_create(&(client->sender_tid), NULL, sender, (void*)client);
+		pthread_create(&(client->receiver_tid), NULL, receiver, (void*)client);
+
+		groups[group_id].num_clients++;
 	}
 }
 
@@ -64,6 +61,16 @@ int server_start(int port_num)
 	return server_fd;
 }
 
+void client_init(client_t* client, int client_fd, int group_id)
+{
+	queue_create(&(client->data_queue));
+	sem_init(&(client->tosend), 0, 0);
+
+	client->fd = client_fd;
+	client->id = groups[group_id].num_clients;
+	client->gid = group_id;
+}
+
 void* receiver(void* cinfo)
 {
 	client_t* client = (client_t*) cinfo;
@@ -81,13 +88,14 @@ void* receiver(void* cinfo)
 			pthread_exit(NULL);
 		}
 		printf("Receiver%d: Received... %c\n", client->id, data);
-		for(i=0; i<num_clients; i++)
+		for(i=0; i<groups[client->gid].num_clients; i++)
 		{
 			if(i != client->id)
 			{
-				queue_enqueue(&(data_queues[i]), &data);
+				client_t* friend = &(groups[client->gid].clients[i]);
+				queue_enqueue(&(friend->data_queue), &data);
 				printf("Receiver%d: Enqueued... %c\n", client->id, data);
-				sem_post(&(tosend[i]));
+				sem_post(&(friend->tosend));
 			}
 		}
 	}
@@ -102,11 +110,11 @@ void* sender(void* cinfo)
 	while(TRUE)
 	{
 		printf("Sender%d: Entered...\n", client->id);
-		sem_wait(&(tosend[client->id]));
+		sem_wait(&(client->tosend));
 		printf("Sender%d: Tosend...\n", client->id);
-		while(!queue_isempty(&(data_queues[client->id])))
+		while(!queue_isempty(&(client->data_queue)))
 		{
-			queue_dequeue(&(data_queues[client->id]), &data);
+			queue_dequeue(&(client->data_queue), &data);
 			send(client->fd, (void*)&data, 1, 0);
 			printf("Sender%d: Sent...%c\n", client->id, data);
 		}
